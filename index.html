@@ -27,26 +27,69 @@
 <section id="payments" class="page"><div class="card"><h2>PayU transactions</h2><p class="notice">Only server-verified transactions should be treated as paid. Browser redirects alone are not proof of payment.</p><div id="paymentList">Loading…</div></div></section>
 <section id="deposits" class="page"><div class="card"><h2>Manual deposits</h2><div id="depositList">Loading…</div></div></section>
 <section id="withdrawals" class="page"><div class="card"><h2>Withdrawal requests</h2><div id="withdrawList">Loading…</div></div></section>
-<section id="settings" class="page"><div class="card"><h2>PayU configuration</h2><p class="notice">Credentials are stored as Firebase Functions secrets, never in this page or Firestore. Set PAYU_KEY and PAYU_SALT with the deployment commands in README. Switch PAYU_ENV to test or production in functions config/environment and redeploy.</p><div class="item"><b>Gateway:</b> PayU Hosted Checkout<br><span class="muted">Environment: configured on server</span></div><button onclick="loadAll()">Refresh data</button></div></section>
+<section id="settings" class="page"><div class="card"><h2>Online payment settings</h2>
+<p class="notice">Choose one active gateway. Credentials are sent only to the authenticated admin backend and stored in a server-only Firestore document. They are never exposed to the user panel.</p>
+<label>Active gateway</label><select id="gatewayProvider"><option value="payu">PayU</option><option value="razorpay">Razorpay</option></select>
+<label>Gateway enabled</label><select id="gatewayEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select>
+<label>Minimum deposit (₹)</label><input id="gatewayMin" type="number" min="1" value="10">
+<div class="item"><h3>PayU credentials</h3><label>Merchant Key</label><input id="payuKey" autocomplete="off" placeholder="PayU Merchant Key"><label>Merchant Salt</label><input id="payuSalt" type="password" autocomplete="new-password" placeholder="Enter PayU Salt"><label>Environment</label><select id="payuEnv"><option value="test">Test / Sandbox</option><option value="production">Live / Production</option></select></div>
+<div class="item"><h3>Razorpay credentials</h3><label>Key ID</label><input id="razorpayKeyId" autocomplete="off" placeholder="rzp_test_..."><label>Key Secret</label><input id="razorpayKeySecret" type="password" autocomplete="new-password" placeholder="Enter Razorpay Key Secret"><label>Environment</label><select id="razorpayEnv"><option value="test">Test</option><option value="production">Live</option></select></div>
+<button onclick="savePaymentConfig()">Save &amp; publish to user panel</button> <button class="secondary" onclick="loadPaymentConfig()">Reload settings</button>
+<p class="notice" style="margin-top:12px">Never use live credentials until test payments, webhook verification, refund handling and merchant account activation are complete.</p></div></section>
 </main></div></div><div id="toast"></div>
 <script>
-const firebaseConfig={apiKey:"AIzaSyCeizjGv0H9AWmwCE28FX35G64vOTK3gWs",authDomain:"e-sports-de5b9.firebaseapp.com",databaseURL:"https://e-sports-de5b9-default-rtdb.firebaseio.com",projectId:"e-sports-de5b9",storageBucket:"e-sports-de5b9.firebasestorage.app",messagingSenderId:"907556743670",appId:"1:907556743670:web:b5954603265a15724b7fd7"};
+const firebaseConfig = {
+  apiKey: "AIzaSyCeizjGv0H9AWmwCE28FX35G64vOTK3gWs",
+  authDomain: "e-sports-de5b9.firebaseapp.com",
+  databaseURL: "https://e-sports-de5b9-default-rtdb.firebaseio.com",
+  projectId: "e-sports-de5b9",
+  storageBucket: "e-sports-de5b9.firebasestorage.app",
+  messagingSenderId: "907556743670",
+  appId: "1:907556743670:web:b5954603265a15724b7fd7"
+};
 firebase.initializeApp(firebaseConfig);const auth=firebase.auth(),db=firebase.firestore();let user=null,unsubs=[];
 const API="https://us-central1-e-sports-de5b9.cloudfunctions.net/api";
 function toast(s,err=false){let t=document.getElementById('toast');t.textContent=s;t.className=err?'err':'';t.style.display='block';setTimeout(()=>t.style.display='none',3500)}
 async function login(){let b=document.getElementById('loginBtn');b.disabled=true;try{await auth.signInWithEmailAndPassword(email.value.trim(),password.value)}catch(e){toast(e.message,true)}finally{b.disabled=false}}
 async function logout(){await auth.signOut()}
 auth.onAuthStateChanged(async u=>{user=u;if(!u){document.getElementById('app').style.display='none';document.getElementById('login').style.display='grid';unsubs.forEach(x=>x());unsubs=[];return}
-try{let token=await u.getIdTokenResult(true);if(token.claims.admin!==true)throw Error('This account does not have the admin claim. Ask the project owner to grant admin access.');document.getElementById('login').style.display='none';document.getElementById('app').style.display='block';loadAll()}catch(e){toast(e.message,true);await auth.signOut()}});
-function page(id,el){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');document.querySelectorAll('.side button').forEach(x=>x.classList.remove('active'));el.classList.add('active');document.querySelector('.side').classList.remove('open')}
+try{let token=await u.getIdTokenResult(true);if(token.claims.admin!==true)throw Error('This account does not have the admin claim. Ask the project owner to grant admin access.');document.getElementById('login').style.display='none';document.getElementById('app').style.display='block';loadAll();loadPaymentConfig()}catch(e){toast(e.message,true);await auth.signOut()}});
+function page(id,el){if(id==='settings'&&user)loadPaymentConfig();document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');document.querySelectorAll('.side button').forEach(x=>x.classList.remove('active'));el.classList.add('active');document.querySelector('.side').classList.remove('open')}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function money(v){return '₹'+(Number(v)||0).toFixed(2)}
 async function call(path,body={}){let tok=await user.getIdToken();let r=await fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},body:JSON.stringify(body)});let d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d}
+
+async function loadPaymentConfig(){
+ try{const d=await call('/adminPaymentConfigGet',{});const c=d.config||{};
+ document.getElementById('gatewayProvider').value=c.provider||'payu';
+ document.getElementById('gatewayEnabled').value=String(!!c.enabled);
+ document.getElementById('gatewayMin').value=c.minDeposit||10;
+ document.getElementById('payuKey').value=c.payu?.key||'';
+ document.getElementById('payuSalt').value=c.payu?.salt||'';
+ document.getElementById('payuEnv').value=c.payu?.env||'test';
+ document.getElementById('razorpayKeyId').value=c.razorpay?.keyId||'';
+ document.getElementById('razorpayKeySecret').value=c.razorpay?.keySecret||'';
+ document.getElementById('razorpayEnv').value=c.razorpay?.env||'test';
+ }catch(e){toast(e.message,true)}
+}
+async function savePaymentConfig(){
+ const btn=event?.target; if(btn)btn.disabled=true;
+ try{
+  await call('/adminPaymentConfigSave',{
+   provider:document.getElementById('gatewayProvider').value,
+   enabled:document.getElementById('gatewayEnabled').value==='true',
+   minDeposit:Number(document.getElementById('gatewayMin').value||10),
+   payu:{key:document.getElementById('payuKey').value.trim(),salt:document.getElementById('payuSalt').value.trim(),env:document.getElementById('payuEnv').value},
+   razorpay:{keyId:document.getElementById('razorpayKeyId').value.trim(),keySecret:document.getElementById('razorpayKeySecret').value.trim(),env:document.getElementById('razorpayEnv').value}
+  });toast('Payment settings published to user panel');
+ }catch(e){toast(e.message,true)}finally{if(btn)btn.disabled=false}
+}
+
 async function loadAll(){if(!user)return;try{let [dep,wid,pay]=await Promise.all(['deposits','withdrawals','payments'].map(c=>db.collection(c).orderBy('createdAt','desc').limit(50).get()));let pendingD=dep.docs.filter(d=>d.data().status==='Pending').length,pendingW=wid.docs.filter(d=>d.data().status==='Pending').length,success=pay.docs.filter(d=>d.data().status==='success').length;
 document.getElementById('stats').innerHTML=`<div class="stat"><b>${pendingD}</b>Pending deposits</div><div class="stat"><b>${pendingW}</b>Pending withdrawals</div><div class="stat"><b>${success}</b>Successful PayU payments</div><div class="stat"><b>${pay.size}</b>Recent payment records</div>`;
 renderDeposits(dep);renderWithdrawals(wid);renderPayments(pay)}catch(e){toast(e.message,true)}}
 function renderDeposits(s){depositList.innerHTML=s.empty?'<p class="muted">No deposits</p>':s.docs.map(d=>{let x=d.data();return `<div class="item"><div class="row"><b>${esc(x.userEmail||x.userId)}</b><b>${money(x.amount)}</b></div><p class="notice">ID: ${esc(d.id)} · UTR: ${esc(x.utr||x.type||'—')} · ${esc(x.status)}</p>${x.proofUrl?`<a target="_blank" rel="noopener" href="${esc(x.proofUrl)}">View proof</a>`:''}${x.status==='Pending'?`<div class="actions"><button onclick="review('deposit','${d.id}','approve')">Approve</button><button class="dangerbtn" onclick="review('deposit','${d.id}','reject')">Reject</button></div>`:''}</div>`}).join('')}
 function renderWithdrawals(s){withdrawList.innerHTML=s.empty?'<p class="muted">No withdrawals</p>':s.docs.map(d=>{let x=d.data();return `<div class="item"><div class="row"><b>${esc(x.userEmail||x.userId)}</b><b>${money(x.amount)}</b></div><p class="notice">ID: ${esc(d.id)} · ${esc(x.status)} · ${esc(x.upiId||x.accountNumber||'')}</p>${x.status==='Pending'?`<div class="actions"><button onclick="review('withdrawal','${d.id}','approve')">Mark paid / approve</button><button class="dangerbtn" onclick="review('withdrawal','${d.id}','reject')">Reject & refund</button></div>`:''}</div>`}).join('')}
 function renderPayments(s){paymentList.innerHTML=s.empty?'<p class="muted">No online payments yet</p>':s.docs.map(d=>{let x=d.data();return `<div class="item"><div class="row"><b>${esc(x.email||x.userId)}</b><b>${money(x.amount)}</b></div><p class="notice">Txn: ${esc(x.txnid||d.id)} · PayU ID: ${esc(x.mihpayid||'—')} · ${esc(x.status||'pending')}</p><span class="pill ${x.status==='success'?'success':x.status==='failure'?'danger':''}">${esc(x.status||'pending')}</span></div>`}).join('')}
-async function review(kind,id,action){let note=prompt('Optional admin note:','');if(note===null)return;try{await call('/adminReview',{kind,id,action,note});toast('Updated successfully');loadAll()}catch(e){toast(e.message,true)}}
+async function review(kind,id,action){let note=prompt('Optional admin note:','');if(note===null)return;try{await call('/adminReview',{kind,id,action,note});toast('Updated successfully');loadAll();loadPaymentConfig()}catch(e){toast(e.message,true)}}
 </script></body></html>
